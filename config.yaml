@@ -1,0 +1,44 @@
+hotkey: "ctrl+alt+t"
+
+audio:
+  capture_device: default
+  sample_rate: 16000
+  block_ms: 100
+
+asr:
+  model: large-v3-turbo
+  device: cuda
+  compute_type: float16
+  language: en
+  vad_threshold: 0.5
+  silence_ms_to_flush: 500
+  max_utterance_s: 15
+
+translator:
+  model_path: models/qwen2.5-7b-instruct-q4_k_m.gguf
+  n_gpu_layers: -1
+  n_ctx: 8192
+  temperature: 0.2
+  max_tokens: 300
+  history_size: 5
+
+subtitle:
+  font_family: "Microsoft YaHei"
+  font_size: 24
+  font_color: "#FFFFFF"
+  background_color: "#000000"
+  background_opacity: 0.7
+  position:
+    x: null
+    y: null
+  hold_seconds: 6
+
+session:
+  dir: sessions
+  save_audio: true
+  save_transcript: true
+
+logging:
+  level: INFO
+  file: logs/meet-mirror.log
+  rotation_mb: 10
