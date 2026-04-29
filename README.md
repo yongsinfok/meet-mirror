@@ -52,9 +52,32 @@ Four worker threads communicate through queues; the subtitle UI runs on the Qt m
 - **Phase 1** (current): real-time EN→ZH subtitle overlay.
 - **Phase 2** (planned): offline post-meeting structured notes using `VibeVoice-ASR-7B` with speaker labels and timestamps, summarised by Qwen2.5 into Chinese Markdown.
 
+## Quick start
+
+> **Note:** This is the Slice 0 skeleton. It loads `config.yaml` and exits — there is no audio capture, ASR, or UI yet. Subsequent slices add those.
+
+Requirements: Python 3.11+ (3.11 or 3.12 recommended). Later slices add CUDA-only dependencies.
+
+```bash
+git clone https://github.com/yongsinfok/meet-mirror.git
+cd meet-mirror
+python -m venv .venv
+.venv\Scripts\activate          # Windows
+pip install -e ".[dev]"
+python main.py
+# → Loaded config from config.yaml
+# → Meet Mirror ready
+```
+
+To see the model artefacts that later slices will need:
+
+```bash
+python scripts/download_models.py
+```
+
 ## Installation
 
-_Not yet available — implementation has not started. See the design spec for the planned setup._
+_Full installation (with CUDA, Whisper, Qwen, PyQt) lands in Slice 2 onward. See the [Phase 1 plan](docs/superpowers/plans/2026-04-30-meet-mirror-phase1-plan.md)._
 
 ## License
 
