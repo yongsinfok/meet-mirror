@@ -1,0 +1,51 @@
+# --- Privacy / sensitive ---
+# NEVER commit meeting recordings or transcripts.
+sessions/
+tests/fixtures/
+
+# --- Large model weights ---
+models/
+*.gguf
+*.bin
+*.safetensors
+*.pt
+*.pth
+
+# --- Logs ---
+logs/
+*.log
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# --- Virtual envs ---
+.venv/
+venv/
+env/
+.python-version
+
+# --- IDE / OS ---
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# --- Secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Local config overrides (keep template config.yaml only if added later) ---
+config.local.yaml
