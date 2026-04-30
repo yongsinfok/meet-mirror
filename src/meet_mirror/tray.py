@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -58,6 +59,8 @@ class TrayApp:
         self.on_quit = on_quit
         self._icon: Icon | None = None
         self._hotkey_handle = None
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat: threading.Thread | None = None
 
     # --- menu actions ---
 
@@ -110,6 +113,22 @@ class TrayApp:
             self._icon.icon = _ICON_IDLE
             self._icon.title = "Meet Mirror (idle)"
 
+    def _heartbeat_loop(self) -> None:
+        """Periodically reconcile the icon with the pipeline state.
+
+        Pipeline.start runs on a worker thread (so the tray menu stays
+        responsive during the ~10s ML model load), so we cannot refresh
+        the icon synchronously after _toggle() returns. This loop catches
+        the state change as soon as the worker thread finishes loading.
+        """
+        last = None
+        while not self._heartbeat_stop.is_set():
+            cur = self.pipeline.is_running
+            if cur != last:
+                self._refresh_icon()
+                last = cur
+            time.sleep(0.4)
+
     # --- menu factory ---
 
     def _build_menu(self) -> Menu:
@@ -141,6 +160,12 @@ class TrayApp:
         self._icon.run_detached()
         logger.info("Tray icon running")
 
+        self._heartbeat_stop.clear()
+        self._heartbeat = threading.Thread(
+            target=self._heartbeat_loop, name="TrayHeartbeat", daemon=True
+        )
+        self._heartbeat.start()
+
         # Global hotkey via the keyboard package. Best-effort: degrade
         # cleanly if the package can't install hooks (e.g. non-admin
         # security software blocks it).
@@ -156,6 +181,10 @@ class TrayApp:
             )
 
     def stop(self) -> None:
+        self._heartbeat_stop.set()
+        if self._heartbeat is not None:
+            self._heartbeat.join(timeout=1.0)
+            self._heartbeat = None
         if self._hotkey_handle is not None:
             try:
                 import keyboard
