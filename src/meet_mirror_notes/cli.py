@@ -85,8 +85,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--n-ctx",
         type=int,
-        default=8192,
-        help="Llama context window for the summarizer (default 8192)",
+        default=16384,
+        help="Llama context window for the summarizer (default 16384; "
+        "raise to 32768 for >2-hour meetings)",
     )
     parser.add_argument(
         "--no-progress",
