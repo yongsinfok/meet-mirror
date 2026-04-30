@@ -163,7 +163,6 @@ def probe_inference(model: object, wav_path: Path) -> None:
     section("5. Single-clip inference attempts")
 
     try:
-        import numpy as np
         import soundfile as sf
         import torch
     except Exception as e:

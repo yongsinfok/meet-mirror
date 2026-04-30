@@ -34,10 +34,11 @@ dev = [
 
 [project.scripts]
 meet-mirror = "meet_mirror.cli:main"
+meet-mirror-notes = "meet_mirror_notes.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["meet_mirror*"]
+include = ["meet_mirror*", "meet_mirror_notes*"]
 
 [tool.ruff]
 line-length = 100
