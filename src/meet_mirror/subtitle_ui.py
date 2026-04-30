@@ -56,7 +56,8 @@ class SubtitleWindow(QWidget):
         self.config = config
         self.config_path = Path(config_path)
         self.cfg = config.subtitle
-        self._current_text: str = ""
+        self._current_zh: str = ""
+        self._current_en: str = ""
         self._opacity_value: float = 0.0
         self._drag_mode: bool = unlock
         self._drag_offset: QPoint | None = None
@@ -99,7 +100,8 @@ class SubtitleWindow(QWidget):
 
         if self._drag_mode:
             # Show a placeholder so the user can see + grab the bar
-            self._current_text = "(drag mode — drop & double-click to lock)"
+            self._current_en = "drag mode"
+            self._current_zh = "(drop & double-click to lock)"
             self._opacity_value = 1.0
 
     # --- opacity property for QPropertyAnimation ---
@@ -118,7 +120,8 @@ class SubtitleWindow(QWidget):
     def _init_geometry(self) -> None:
         screen = QApplication.primaryScreen().availableGeometry()
         width = min(1200, int(screen.width() * 0.7))
-        height = max(self.cfg.font_size * 4, 90)
+        # Allow room for 1 EN line (small) + 2 ZH lines (full size) + padding
+        height = max(self.cfg.font_size * 6, 140)
         self.resize(width, height)
         x = self.cfg.position.x
         y = self.cfg.position.y
@@ -141,10 +144,10 @@ class SubtitleWindow(QWidget):
             self._first_segment_logged = True
         else:
             logger.debug(f"UI segment: zh={seg.zh_text!r}")
-        text = seg.zh_text or seg.en_text
-        if not text:
+        if not seg.zh_text and not seg.en_text:
             return
-        self._current_text = text
+        self._current_en = seg.en_text or ""
+        self._current_zh = seg.zh_text or ""
         self._fade_out.stop()
         self._hold_timer.stop()
         if self._opacity_value < 1.0:
@@ -192,21 +195,40 @@ class SubtitleWindow(QWidget):
         return s + ell
 
     def paintEvent(self, _ev) -> None:
-        if self._opacity_value <= 0.001 or not self._current_text:
+        if self._opacity_value <= 0.001:
+            return
+        if not self._current_zh and not self._current_en:
             return
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setOpacity(self._opacity_value)
 
-        font = QFont(self.cfg.font_family, self.cfg.font_size)
-        font.setBold(True)
-        painter.setFont(font)
-        metrics = QFontMetrics(font)
+        zh_font = QFont(self.cfg.font_family, self.cfg.font_size)
+        zh_font.setBold(True)
+        zh_metrics = QFontMetrics(zh_font)
+
+        en_pt = max(10, int(self.cfg.font_size * 0.65))
+        en_font = QFont(self.cfg.font_family, en_pt)
+        en_metrics = QFontMetrics(en_font)
 
         max_text_w = self.width() - 2 * self.BAR_PADDING_X
-        lines = self._wrap_text(self._current_text, metrics, max_text_w)
-        line_h = metrics.lineSpacing()
-        text_h = line_h * len(lines)
+
+        en_lines: list[str] = []
+        if self._current_en:
+            en_lines = self._wrap_text(self._current_en, en_metrics, max_text_w)[:1]
+            if en_lines:
+                en_lines[0] = self._truncate(en_lines[0], en_metrics, max_text_w)
+
+        zh_lines: list[str] = []
+        if self._current_zh:
+            zh_lines = self._wrap_text(self._current_zh, zh_metrics, max_text_w)[:2]
+            if len(zh_lines) == 2:
+                zh_lines[1] = self._truncate(zh_lines[1], zh_metrics, max_text_w)
+
+        en_h = en_metrics.lineSpacing() if en_lines else 0
+        zh_block_h = zh_metrics.lineSpacing() * len(zh_lines)
+        gap = 4 if en_lines and zh_lines else 0
+        text_h = en_h + gap + zh_block_h
 
         bar_w = self.width()
         bar_h = text_h + 2 * self.BAR_PADDING_Y
@@ -224,17 +246,37 @@ class SubtitleWindow(QWidget):
             painter.setPen(QPen(QColor(255, 200, 0), 2))
             painter.drawPath(path)
 
-        text_color = QColor(self.cfg.font_color)
+        zh_color = QColor(self.cfg.font_color)
+        en_color = QColor("#CCCCCC")
         outline_color = QColor("#000000")
-        for i, line in enumerate(lines):
-            tw = metrics.horizontalAdvance(line)
+
+        cursor_y = bar_y + self.BAR_PADDING_Y
+
+        if en_lines:
+            painter.setFont(en_font)
+            line = en_lines[0]
+            tw = en_metrics.horizontalAdvance(line)
             tx = (bar_w - tw) / 2
-            ty = bar_y + self.BAR_PADDING_Y + (i + 1) * line_h - metrics.descent()
+            ty = cursor_y + en_metrics.lineSpacing() - en_metrics.descent()
             painter.setPen(outline_color)
             for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
                 painter.drawText(int(tx + dx), int(ty + dy), line)
-            painter.setPen(text_color)
+            painter.setPen(en_color)
             painter.drawText(int(tx), int(ty), line)
+            cursor_y += en_metrics.lineSpacing() + gap
+
+        if zh_lines:
+            painter.setFont(zh_font)
+            line_h = zh_metrics.lineSpacing()
+            for i, line in enumerate(zh_lines):
+                tw = zh_metrics.horizontalAdvance(line)
+                tx = (bar_w - tw) / 2
+                ty = cursor_y + (i + 1) * line_h - zh_metrics.descent()
+                painter.setPen(outline_color)
+                for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    painter.drawText(int(tx + dx), int(ty + dy), line)
+                painter.setPen(zh_color)
+                painter.drawText(int(tx), int(ty), line)
 
         painter.end()
 
@@ -248,10 +290,12 @@ class SubtitleWindow(QWidget):
         )
         if not self._drag_mode:
             self._persist_position()
-            self._current_text = ""
+            self._current_en = ""
+            self._current_zh = ""
             self._opacity_value = 0.0
         else:
-            self._current_text = "(drag mode — drop & double-click to lock)"
+            self._current_en = "drag mode"
+            self._current_zh = "(drop & double-click to lock)"
             self._opacity_value = 1.0
         self.update()
 
