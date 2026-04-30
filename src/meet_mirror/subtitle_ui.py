@@ -95,6 +95,7 @@ class SubtitleWindow(QWidget):
         self._poll.setInterval(50)
         self._poll.timeout.connect(self._poll_queue)
         self._poll.start()
+        self._first_segment_logged = False
 
         if self._drag_mode:
             # Show a placeholder so the user can see + grab the bar
@@ -133,6 +134,13 @@ class SubtitleWindow(QWidget):
             seg = self.subtitle_q.get_nowait()
         except queue.Empty:
             return
+        if not self._first_segment_logged:
+            logger.info(
+                f"First subtitle delivered to UI: en={seg.en_text!r} zh={seg.zh_text!r}"
+            )
+            self._first_segment_logged = True
+        else:
+            logger.debug(f"UI segment: zh={seg.zh_text!r}")
         text = seg.zh_text or seg.en_text
         if not text:
             return

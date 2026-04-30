@@ -128,8 +128,8 @@ class TranslatorWorker(threading.Thread):
             zh_seg = self.process_one(seg)
             if zh_seg is None:
                 continue
-            logger.debug(
-                f"ZH: {zh_seg.zh_text!r} (lat={zh_seg.translation_latency_ms}ms)"
+            logger.info(
+                f"ZH [{zh_seg.translation_latency_ms}ms]: {zh_seg.zh_text}"
             )
             self.out_q.put(zh_seg)
 

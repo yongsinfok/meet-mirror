@@ -203,9 +203,8 @@ class AsrWorker(threading.Thread):
                 audio_ts_start=flush.ts_start,
                 audio_ts_end=flush.ts_end,
             )
-            logger.debug(
-                f"EN segment: {text!r} "
-                f"(transcribe={elapsed_ms}ms dur={flush.ts_end - flush.ts_start:.1f}s)"
+            logger.info(
+                f"EN [{elapsed_ms}ms/{flush.ts_end - flush.ts_start:.1f}s]: {text}"
             )
             self.out_q.put(seg)
 
