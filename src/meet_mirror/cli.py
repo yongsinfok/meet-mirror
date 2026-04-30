@@ -101,13 +101,17 @@ def run_console(cfg: Config) -> int:
 
 
 def run_gui(cfg: Config, config_path: Path, unlock: bool) -> int:
+    import signal
+
+    from PyQt6.QtCore import QTimer
+    from PyQt6.QtGui import QKeySequence, QShortcut
     from PyQt6.QtWidgets import QApplication
 
     from .pipeline import Pipeline
     from .subtitle_ui import SubtitleWindow
 
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(True)
+    app.setQuitOnLastWindowClosed(False)
 
     pipeline = Pipeline(cfg)
     window = SubtitleWindow(
@@ -117,9 +121,24 @@ def run_gui(cfg: Config, config_path: Path, unlock: bool) -> int:
         unlock=unlock,
     )
 
+    # Ctrl+Q quits cleanly; visible target so the shortcut is captured.
+    quit_shortcut = QShortcut(QKeySequence("Ctrl+Q"), window)
+    quit_shortcut.activated.connect(app.quit)
+
+    # Make Ctrl+C in the launching terminal terminate the app cleanly.
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    # Wake the Python interpreter every 200 ms so the SIGINT handler can run
+    # even while the Qt event loop is blocked in C++ paint code.
+    heartbeat = QTimer()
+    heartbeat.start(200)
+    heartbeat.timeout.connect(lambda: None)
+
     pipeline.start()
     window.show()
-    logger.info("Meet Mirror ready (gui mode). Close the bar or quit the app to stop.")
+    logger.info(
+        "Meet Mirror ready (gui mode). Ctrl+C in this terminal or "
+        "Ctrl+Q with the bar focused to quit."
+    )
 
     try:
         exit_code = app.exec()
