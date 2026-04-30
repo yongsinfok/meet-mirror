@@ -109,6 +109,7 @@ def run_gui(cfg: Config, config_path: Path, unlock: bool) -> int:
 
     from .pipeline import Pipeline
     from .subtitle_ui import SubtitleWindow
+    from .tray import TrayApp
 
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
@@ -121,28 +122,27 @@ def run_gui(cfg: Config, config_path: Path, unlock: bool) -> int:
         unlock=unlock,
     )
 
-    # Ctrl+Q quits cleanly; visible target so the shortcut is captured.
+    tray = TrayApp(pipeline=pipeline, hotkey=cfg.hotkey, on_quit=app.quit)
+
     quit_shortcut = QShortcut(QKeySequence("Ctrl+Q"), window)
     quit_shortcut.activated.connect(app.quit)
 
-    # Make Ctrl+C in the launching terminal terminate the app cleanly.
     signal.signal(signal.SIGINT, lambda *_: app.quit())
-    # Wake the Python interpreter every 200 ms so the SIGINT handler can run
-    # even while the Qt event loop is blocked in C++ paint code.
     heartbeat = QTimer()
     heartbeat.start(200)
     heartbeat.timeout.connect(lambda: None)
 
-    pipeline.start()
+    tray.start()
     window.show()
     logger.info(
-        "Meet Mirror ready (gui mode). Ctrl+C in this terminal or "
-        "Ctrl+Q with the bar focused to quit."
+        f"Meet Mirror ready (gui mode). Tray icon + global hotkey "
+        f"{cfg.hotkey!r} toggle the pipeline. Pipeline starts idle."
     )
 
     try:
         exit_code = app.exec()
     finally:
+        tray.stop()
         pipeline.stop()
     return exit_code
 
