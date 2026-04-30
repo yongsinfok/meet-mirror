@@ -78,6 +78,8 @@ Phase 1 is multi-threaded with bounded queues and drop-oldest backpressure; the 
 
 ## Quick start
 
+> **First time installing on a new laptop?** [`SETUP.md`](SETUP.md) is a from-zero linear walkthrough (Python install through first run) — recommended over the abbreviated steps below.
+
 ### 1. Create the venv
 
 ```bash
