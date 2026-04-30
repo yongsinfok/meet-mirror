@@ -24,8 +24,8 @@ def _make_icon(color: tuple[int, int, int]) -> Image.Image:
     return img
 
 
-_ICON_RUNNING = _make_icon((40, 200, 80))   # green
-_ICON_IDLE = _make_icon((140, 140, 140))    # gray
+_RUNNING_COLOR = (40, 200, 80)   # green
+_IDLE_COLOR = (140, 140, 140)    # gray
 
 
 def _open_folder(path: Path) -> None:
@@ -109,12 +109,14 @@ class TrayApp:
             return
         running = self.pipeline.is_running
         try:
-            if running:
-                self._icon.icon = _ICON_RUNNING
-                self._icon.title = "Meet Mirror (running)"
-            else:
-                self._icon.icon = _ICON_IDLE
-                self._icon.title = "Meet Mirror (idle)"
+            # Build a *fresh* PIL Image each refresh; pystray's win32
+            # backend short-circuits the HICON update when the icon
+            # property is set to the same Python object as before.
+            color = _RUNNING_COLOR if running else _IDLE_COLOR
+            self._icon.icon = _make_icon(color)
+            self._icon.title = (
+                "Meet Mirror (running)" if running else "Meet Mirror (idle)"
+            )
             self._icon.update_menu()
             logger.info(f"Tray icon refreshed: running={running}")
         except Exception as e:
@@ -168,7 +170,7 @@ class TrayApp:
     def start(self) -> None:
         self._icon = Icon(
             name="meet-mirror",
-            icon=_ICON_IDLE,
+            icon=_make_icon(_IDLE_COLOR),
             title="Meet Mirror (idle)",
             menu=self._build_menu(),
         )
