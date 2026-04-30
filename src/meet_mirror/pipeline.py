@@ -8,17 +8,20 @@ from loguru import logger
 from .asr import AsrWorker
 from .audio_capture import AudioCapture
 from .config import Config
-from .types import AudioChunk, EnSegment
+from .translator import TranslatorWorker
+from .types import AudioChunk, EnSegment, ZhSegment
 
 
 class Pipeline:
     AUDIO_Q_MAX = 200
     ASR_Q_MAX = 50
+    SUBTITLE_Q_MAX = 50
 
     def __init__(self, config: Config) -> None:
         self.config = config
         self.audio_q: queue.Queue[AudioChunk] = queue.Queue(maxsize=self.AUDIO_Q_MAX)
         self.asr_q: queue.Queue[EnSegment] = queue.Queue(maxsize=self.ASR_Q_MAX)
+        self.subtitle_q: queue.Queue[ZhSegment] = queue.Queue(maxsize=self.SUBTITLE_Q_MAX)
         self.stop_event = threading.Event()
         self._workers: list[threading.Thread] = []
         self._running = False
@@ -43,6 +46,12 @@ class Pipeline:
                 sample_rate=self.config.audio.sample_rate,
                 block_ms=self.config.audio.block_ms,
                 asr_config=self.config.asr,
+            ),
+            TranslatorWorker(
+                in_q=self.asr_q,
+                out_q=self.subtitle_q,
+                stop_event=self.stop_event,
+                translator_config=self.config.translator,
             ),
         ]
         for w in self._workers:
