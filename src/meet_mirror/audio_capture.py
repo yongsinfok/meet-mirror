@@ -19,6 +19,7 @@ class AudioCapture(threading.Thread):
         sample_rate: int = 16000,
         block_ms: int = 100,
         device: str = "default",
+        persist_q: queue.Queue[AudioChunk] | None = None,
     ) -> None:
         super().__init__(name="AudioCapture", daemon=True)
         self.out_q = out_q
@@ -27,6 +28,7 @@ class AudioCapture(threading.Thread):
         self.block_ms = block_ms
         self.blocksize = int(sample_rate * block_ms / 1000)
         self.device = device
+        self.persist_q = persist_q
 
     def _open_loopback(self):
         if self.device in (None, "", "default"):
@@ -48,7 +50,14 @@ class AudioCapture(threading.Thread):
                 ts_end = time.time()
                 ts_start = ts_end - self.blocksize / self.sample_rate
                 samples = np.asarray(data, dtype=np.float32).reshape(-1)
-                self.out_q.put(
-                    AudioChunk(samples=samples, ts_start=ts_start, ts_end=ts_end)
+                chunk = AudioChunk(
+                    samples=samples, ts_start=ts_start, ts_end=ts_end
                 )
+                self.out_q.put(chunk)
+                if self.persist_q is not None:
+                    try:
+                        self.persist_q.put_nowait(chunk)
+                    except queue.Full:
+                        # Persistence is best-effort; Slice 6 will tighten this.
+                        pass
         logger.info("Audio capture stopped")

@@ -49,6 +49,7 @@ class TranslatorWorker(threading.Thread):
         stop_event: threading.Event,
         translator_config: TranslatorConfig,
         llm: object | None = None,
+        persist_q: queue.Queue[ZhSegment] | None = None,
     ) -> None:
         super().__init__(name="TranslatorWorker", daemon=True)
         self.in_q = in_q
@@ -59,6 +60,7 @@ class TranslatorWorker(threading.Thread):
             maxlen=translator_config.history_size
         )
         self._llm = llm  # if provided (tests), skip Llama load
+        self.persist_q = persist_q
 
     def _load_llm(self) -> object:
         from llama_cpp import Llama
@@ -132,5 +134,10 @@ class TranslatorWorker(threading.Thread):
                 f"ZH [{zh_seg.translation_latency_ms}ms]: {zh_seg.zh_text}"
             )
             self.out_q.put(zh_seg)
+            if self.persist_q is not None:
+                try:
+                    self.persist_q.put_nowait(zh_seg)
+                except queue.Full:
+                    pass
 
         logger.info("Translator stopped")
