@@ -44,6 +44,11 @@ class Pipeline:
         self._running = False
         self._lock = threading.Lock()
         self.session_dir: Path | None = None
+        # Updated by TranslatorWorker after each successful emit; consumed
+        # by the status heartbeat. Plain int writes/reads are atomic in
+        # CPython, no extra locking needed for observability.
+        self.last_e2e_ms: int = 0
+        self._heartbeat_thread: threading.Thread | None = None
 
     @staticmethod
     def _drain(q: queue.Queue) -> None:
@@ -117,6 +122,7 @@ class Pipeline:
             stop_event=self.stop_event,
             translator_config=self.config.translator,
             persist_q=self.subtitle_q_persist,
+            pipeline_ref=self,
         )
         translator_worker.start()
 
@@ -159,6 +165,13 @@ class Pipeline:
         self._running = True
         logger.info(f"Pipeline started with {len(self._workers)} workers")
 
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name="StatusHeartbeat",
+            daemon=True,
+        )
+        self._heartbeat_thread.start()
+
     def stop(self, timeout: float = 5.0) -> None:
         with self._lock:
             self._stop_locked(timeout)
@@ -172,9 +185,29 @@ class Pipeline:
             w.join(timeout=timeout)
             if w.is_alive():
                 logger.warning(f"Worker {w.name} did not stop within {timeout}s")
+        if self._heartbeat_thread is not None:
+            self._heartbeat_thread.join(timeout=2.0)
+            self._heartbeat_thread = None
         self._workers = []
         self._running = False
         logger.info("Pipeline stopped")
+
+    def _heartbeat_loop(self) -> None:
+        """Emit a periodic status line so long-running sessions surface
+        queue backpressure and end-to-end latency without the user
+        having to grep DEBUG logs."""
+        while not self.stop_event.is_set():
+            if self.stop_event.wait(30.0):
+                return
+            try:
+                logger.info(
+                    f"status: audio_q={self.audio_q.qsize()} "
+                    f"asr_q={self.asr_q.qsize()} "
+                    f"sub_q={self.subtitle_q.qsize()} "
+                    f"last_e2e_ms={self.last_e2e_ms}"
+                )
+            except Exception as e:
+                logger.warning(f"Heartbeat read failed: {e}")
 
     @property
     def is_running(self) -> bool:
