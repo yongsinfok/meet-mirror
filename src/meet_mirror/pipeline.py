@@ -86,54 +86,76 @@ class Pipeline:
             queue.Queue(maxsize=self.SUBTITLE_PERSIST_Q_MAX) if save_text else None
         )
 
+        # Worker startup order matters: ctranslate2 (Whisper) and
+        # llama-cpp-python both want a CUDA context, and racing them
+        # concurrently has been observed to deadlock CT2's loader. Spawn
+        # ASR first, wait for Whisper to finish loading, *then* start the
+        # rest. AudioCapture is also deferred so it doesn't burn capture
+        # buffer while Whisper warms up.
+        asr_ready = threading.Event()
+        asr_worker = AsrWorker(
+            in_q=self.audio_q,
+            out_q=self.asr_q,
+            stop_event=self.stop_event,
+            sample_rate=self.config.audio.sample_rate,
+            block_ms=self.config.audio.block_ms,
+            asr_config=self.config.asr,
+            ready_event=asr_ready,
+        )
+        asr_worker.start()
+        if not asr_ready.wait(timeout=60.0):
+            logger.warning(
+                "ASR worker did not signal ready within 60s; "
+                "continuing pipeline startup anyway"
+            )
+        else:
+            logger.info("ASR worker ready; spawning translator + capture")
+
+        translator_worker = TranslatorWorker(
+            in_q=self.asr_q,
+            out_q=self.subtitle_q,
+            stop_event=self.stop_event,
+            translator_config=self.config.translator,
+            persist_q=self.subtitle_q_persist,
+        )
+        translator_worker.start()
+
+        audio_worker = AudioCapture(
+            out_q=self.audio_q,
+            stop_event=self.stop_event,
+            sample_rate=self.config.audio.sample_rate,
+            block_ms=self.config.audio.block_ms,
+            device=self.config.audio.capture_device,
+            persist_q=self.audio_q_persist,
+        )
+        audio_worker.start()
+
         workers: list[threading.Thread] = [
-            AudioCapture(
-                out_q=self.audio_q,
-                stop_event=self.stop_event,
-                sample_rate=self.config.audio.sample_rate,
-                block_ms=self.config.audio.block_ms,
-                device=self.config.audio.capture_device,
-                persist_q=self.audio_q_persist,
-            ),
-            AsrWorker(
-                in_q=self.audio_q,
-                out_q=self.asr_q,
-                stop_event=self.stop_event,
-                sample_rate=self.config.audio.sample_rate,
-                block_ms=self.config.audio.block_ms,
-                asr_config=self.config.asr,
-            ),
-            TranslatorWorker(
-                in_q=self.asr_q,
-                out_q=self.subtitle_q,
-                stop_event=self.stop_event,
-                translator_config=self.config.translator,
-                persist_q=self.subtitle_q_persist,
-            ),
+            asr_worker,
+            translator_worker,
+            audio_worker,
         ]
 
         if self.audio_q_persist is not None:
-            workers.append(
-                AudioWriter(
-                    in_q=self.audio_q_persist,
-                    stop_event=self.stop_event,
-                    session_dir=self.session_dir,
-                    sample_rate=self.config.audio.sample_rate,
-                )
+            aw = AudioWriter(
+                in_q=self.audio_q_persist,
+                stop_event=self.stop_event,
+                session_dir=self.session_dir,
+                sample_rate=self.config.audio.sample_rate,
             )
+            aw.start()
+            workers.append(aw)
         if self.subtitle_q_persist is not None:
-            workers.append(
-                TextWriter(
-                    in_q=self.subtitle_q_persist,
-                    stop_event=self.stop_event,
-                    session_dir=self.session_dir,
-                    session_start=session_start,
-                )
+            tw = TextWriter(
+                in_q=self.subtitle_q_persist,
+                stop_event=self.stop_event,
+                session_dir=self.session_dir,
+                session_start=session_start,
             )
+            tw.start()
+            workers.append(tw)
 
         self._workers = workers
-        for w in self._workers:
-            w.start()
         self._running = True
         logger.info(f"Pipeline started with {len(self._workers)} workers")
 

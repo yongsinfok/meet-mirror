@@ -154,6 +154,7 @@ class AsrWorker(threading.Thread):
         sample_rate: int,
         block_ms: int,
         asr_config: AsrConfig,
+        ready_event: threading.Event | None = None,
     ) -> None:
         super().__init__(name="AsrWorker", daemon=True)
         self.in_q = in_q
@@ -161,6 +162,7 @@ class AsrWorker(threading.Thread):
         self.stop_event = stop_event
         self.sample_rate = sample_rate
         self.asr_config = asr_config
+        self.ready_event = ready_event
         self.vad_state = VadStateMachine(
             block_ms=block_ms,
             silence_ms_to_flush=asr_config.silence_ms_to_flush,
@@ -189,6 +191,8 @@ class AsrWorker(threading.Thread):
         )
         vad = SileroVad(threshold=self.asr_config.vad_threshold)
         logger.info("ASR worker ready")
+        if self.ready_event is not None:
+            self.ready_event.set()
 
         while not self.stop_event.is_set():
             try:
