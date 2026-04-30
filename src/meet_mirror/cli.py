@@ -11,6 +11,10 @@ from loguru import logger
 
 from .config import Config
 
+if sys.stdout.encoding and sys.stdout.encoding.lower() != "utf-8":
+    sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+    sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[union-attr]
+
 
 def configure_logging(cfg: Config) -> None:
     log_path = Path(cfg.logging.file)
@@ -62,11 +66,15 @@ def run_console(cfg: Config) -> int:
     def consume() -> None:
         while not stop_consumer.is_set():
             try:
-                seg = pipeline.asr_q.get(timeout=0.5)
+                seg = pipeline.subtitle_q.get(timeout=0.5)
             except queue.Empty:
                 continue
             ts = _format_relative(seg.audio_ts_start, session_start)
-            print(f"[{ts}] EN: {seg.text}", flush=True)
+            print(f"[{ts}] EN: {seg.en_text}", flush=True)
+            print(
+                f"           ZH: {seg.zh_text} (lat={seg.translation_latency_ms}ms)",
+                flush=True,
+            )
 
     consumer = threading.Thread(target=consume, name="ConsoleConsumer", daemon=True)
 
