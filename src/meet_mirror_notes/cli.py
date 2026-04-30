@@ -55,6 +55,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Skip stage 1; require existing transcript_with_speakers.json",
     )
     parser.add_argument(
+        "--speakers",
+        type=int,
+        default=2,
+        help="Number of speakers for diarization (default 2)",
+    )
+    parser.add_argument(
+        "--whisper-model",
+        default="large-v3-turbo",
+        help="faster-whisper model name (default large-v3-turbo)",
+    )
+    parser.add_argument(
+        "--device",
+        default="cuda",
+        choices=["cuda", "cpu"],
+        help="Compute device for Whisper (default cuda)",
+    )
+    parser.add_argument(
+        "--compute-type",
+        default="float16",
+        choices=["float16", "int8", "int8_float16", "float32"],
+        help="Whisper compute type (default float16)",
+    )
+    parser.add_argument(
         "--no-progress",
         action="store_true",
         help="Disable tqdm progress bars",
@@ -97,6 +120,43 @@ def audio_duration_s(audio_path: Path) -> float:
     return float(info.duration)
 
 
+def run_stage1_asr_diarize(
+    session_dir: Path, audio_path: Path, duration: float, args: argparse.Namespace
+) -> int | None:
+    """Stage 1: transcribe + diarize. Returns exit code on error, else None."""
+    transcript_json = session_dir / "transcript_with_speakers.json"
+    if transcript_json.exists() and not args.force_asr:
+        logger.info(f"[skip stage 1] {transcript_json.name} exists "
+                    f"(use --force-asr to re-run)")
+        return None
+
+    try:
+        from .asr_diarize import transcribe_and_diarize, write_transcript_json
+    except ImportError as e:
+        logger.error(f"Stage 1 deps missing: {e}")
+        return EXIT_ASR_FAILED
+
+    try:
+        segments = transcribe_and_diarize(
+            audio_path,
+            n_speakers=args.speakers,
+            model_name=args.whisper_model,
+            device=args.device,
+            compute_type=args.compute_type,
+        )
+    except Exception as e:
+        logger.exception(f"Stage 1 failed: {e}")
+        return EXIT_ASR_FAILED
+
+    write_transcript_json(
+        transcript_json, segments, audio_path, duration,
+        args.whisper_model, args.speakers,
+    )
+    logger.info(f"Stage 1: {len(segments)} segments across "
+                f"{args.speakers} speakers")
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     session_dir = args.session_dir.resolve()
@@ -110,11 +170,26 @@ def main(argv: list[str] | None = None) -> int:
     duration = audio_duration_s(audio_path)
     logger.info(f"Session: {session_dir}")
     logger.info(f"audio.wav duration: {duration:.1f}s ({duration / 60:.1f} min)")
-    logger.info(f"bits={args.bits} force_asr={args.force_asr} "
+    logger.info(f"speakers={args.speakers} force_asr={args.force_asr} "
                 f"force_summary={args.force_summary} "
                 f"asr_only={args.asr_only} summary_only={args.summary_only}")
 
-    print("Notes pipeline ready (skeleton — Slice 2 wires up VibeVoice ASR)")
+    if not args.summary_only:
+        err = run_stage1_asr_diarize(session_dir, audio_path, duration, args)
+        if err is not None:
+            return err
+
+    if args.asr_only:
+        logger.info("--asr-only: stopping after stage 1")
+        return EXIT_OK
+
+    transcript_json = session_dir / "transcript_with_speakers.json"
+    if not transcript_json.exists():
+        logger.error("No transcript_with_speakers.json; run without --summary-only first")
+        return EXIT_BAD_SESSION
+
+    logger.info("Stage 2 (Qwen summarizer) lands in Slice 4.")
+    print("Stage 1 complete; stage 2 pending.")
     return EXIT_OK
 
 
