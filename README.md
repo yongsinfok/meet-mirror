@@ -1,62 +1,82 @@
 # Meet Mirror
 
-A fully-local real-time English-to-Chinese subtitle overlay for Microsoft Teams meetings.
+A fully-local English → Chinese pipeline for Microsoft Teams meetings.
 
-## Status
+- **Phase 1 (`v0.1.0`)** — real-time floating-bar subtitle overlay during the meeting.
+- **Phase 2 (`v0.2.1`)** — post-meeting Chinese Markdown summary with speaker labels.
 
-**Early development.** Design phase complete — see [`docs/superpowers/specs/2026-04-30-meet-mirror-design.md`](docs/superpowers/specs/2026-04-30-meet-mirror-design.md). Implementation has not started yet.
+100% on-device: no cloud APIs, no telemetry, no third-party services. Driven by Accenture client-data sensitivity — required, not preferred.
 
 ## What it does
 
-During a Teams meeting, Meet Mirror:
+### Phase 1 — live subtitles
 
-1. Captures the system audio output (what the other party says) via Windows WASAPI loopback.
-2. Transcribes English speech in real time using `faster-whisper` (large-v3-turbo).
-3. Translates each utterance into Chinese with a local `Qwen2.5-7B-Instruct` model running on `llama.cpp`.
-4. Displays the Chinese translation as a floating subtitle bar at the bottom of the screen.
-5. Saves the meeting recording (`audio.wav`) and bilingual transcript (`transcript.txt`) to a session folder so you can produce structured notes afterwards (Phase 2).
+During a Teams meeting:
 
-End-to-end perceived latency is around 2 seconds for a 5-second utterance.
+1. Captures the system audio output (the *other* party's voice) via Windows WASAPI loopback.
+2. Transcribes English speech in real time using `faster-whisper` (`large-v3-turbo`).
+3. Translates each utterance into Chinese with a local `Qwen2.5-7B-Instruct` Q4_K_M GGUF on `llama-cpp-python`.
+4. Renders the bilingual subtitle on a frameless, click-through, always-on-top Qt overlay.
+5. Saves `audio.wav` + `transcript.txt` per session under `sessions/YYYY-MM-DD_HH-MM-SS/`.
 
-## Why fully-local
+End-to-end perceived latency: ~2.5 s for a 5-second utterance with natural pauses.
 
-This project runs **entirely on your machine**. No audio, transcripts, or translation requests ever leave the host. There are no cloud API calls (no DeepL, no OpenAI, no Azure, no Google), no telemetry, no third-party services.
+Tray icon and `Ctrl+Alt+T` global hotkey toggle the pipeline. Pipeline starts idle by default.
 
-This is a hard requirement, not a preference, because the meetings being translated may contain client-confidential material.
+### Phase 2 — post-meeting notes
 
-## Hardware requirements
+After the meeting, a one-shot CLI turns any saved session into a structured Chinese Markdown summary:
 
-- Windows 11
-- NVIDIA GPU with 16 GB VRAM and CUDA support
-- 64 GB RAM
-- ~10 GB free disk for model weights
+```bash
+python -m meet_mirror_notes sessions/2026-04-30_13-20-51
+```
 
-## Architecture overview
+Pipeline:
+
+1. Re-transcribe `audio.wav` with `faster-whisper` (word-level timestamps).
+2. Per-utterance voice embeddings via `Resemblyzer`, clustered with `sklearn` agglomerative clustering into N speakers (`--speakers`, default 2). Output: `transcript_with_speakers.json`.
+3. Summarize via Qwen2.5-7B with the spec § 6.2 prompt structure (single-pass for ≤80-min sessions, automatic map-reduce beyond that). Output: `notes.md` with `概要 / 关键决策 / 行动项 / 未解决问题 / 时间线` sections.
+
+## Hardware
+
+| Item | Spec |
+|---|---|
+| OS | Windows 11 |
+| GPU | NVIDIA, ≥ 16 GB VRAM, CUDA support |
+| RAM | 64 GB recommended (Phase 1 alone runs in ≤16 GB system RAM) |
+| Disk | ~10 GB free for model weights (`models/` + HF cache) |
+| Python | 3.12 (3.13 / 3.14 lack ML wheels at time of writing) |
+
+Tested on RTX PRO 4000 Blackwell Laptop GPU (sm_120, 16 GB). Steady-state numbers in [`BENCHMARKS.md`](BENCHMARKS.md).
+
+## Architecture
 
 ```
-Teams audio
-   │ (WASAPI loopback)
+                      Phase 1 (live)
+Teams audio ──► audio_capture ──► asr ──► translator ──► subtitle_ui
+   (WASAPI         │                                          │
+    loopback)      ▼                                          ▼
+              audio_writer                              text_writer
+                   │                                          │
+                   ▼                                          ▼
+                                  sessions/<ts>/
+                                  ├── audio.wav
+                                  └── transcript.txt
+
+                      Phase 2 (offline, on demand)
+sessions/<ts>/audio.wav
+   │
    ▼
-audio_capture ──► asr (faster-whisper) ──► translator (Qwen2.5-7B) ──► subtitle_ui (PyQt6)
-                                                                            │
-                                                                            ▼
-                                                                       sessions/<ts>/
-                                                                       ├── audio.wav
-                                                                       └── transcript.txt
+asr_diarize.py ──► transcript_with_speakers.json
+   │ (Whisper word timestamps + Resemblyzer + sklearn clustering)
+   ▼
+summarizer.py  ──► notes.md
+   (Qwen2.5-7B Q4 single-pass or map-reduce)
 ```
 
-Four worker threads communicate through queues; the subtitle UI runs on the Qt main thread. Full architecture, data contracts, error handling, and performance budget are in the design spec linked above.
-
-## Roadmap
-
-- **Phase 1** (current): real-time EN→ZH subtitle overlay.
-- **Phase 2** (planned): offline post-meeting structured notes using `VibeVoice-ASR-7B` with speaker labels and timestamps, summarised by Qwen2.5 into Chinese Markdown.
+Phase 1 is multi-threaded with bounded queues and drop-oldest backpressure; the Qt subtitle window lives on the main thread. Phase 2 is a single CLI invocation, models loaded sequentially on the GPU. Spec details in [`docs/superpowers/specs/2026-04-30-meet-mirror-design.md`](docs/superpowers/specs/2026-04-30-meet-mirror-design.md) and [`docs/superpowers/specs/2026-04-30-meet-mirror-phase2-notes-design.md`](docs/superpowers/specs/2026-04-30-meet-mirror-phase2-notes-design.md).
 
 ## Quick start
-
-> **Status:** Slice 2 in progress. WASAPI loopback capture + Whisper ASR work in `--mode console`. Translator (Slice 3) and subtitle UI (Slice 4) not yet implemented.
-
-Requirements: Python 3.12 (3.13/3.14 lack ML wheels at the time of writing), NVIDIA GPU + driver supporting CUDA 12.8, ~3 GB free disk for the Whisper model cache.
 
 ### 1. Create the venv
 
@@ -68,19 +88,19 @@ py -3.12 -m venv .venv
 python -m pip install --upgrade pip
 ```
 
-### 2. Install PyTorch with CUDA support
+### 2. Install PyTorch with CUDA
 
-PyTorch wheels are not on PyPI; install them from the official PyTorch index **before** the editable install. Use the wheel set that matches your GPU:
+PyTorch wheels live on its own index, not PyPI. Pick the wheel set that matches your GPU:
 
 ```bash
-# RTX 50 / Blackwell (sm_120) — needs cu128 wheels (torch 2.7+):
+# RTX 50 / Blackwell (sm_120) — cu128 (torch 2.7+):
 pip install torch --index-url https://download.pytorch.org/whl/cu128
 
-# RTX 30 / 40 (sm_86 / sm_89) — cu124 wheels (torch 2.4+) are sufficient:
+# RTX 30 / 40 (sm_86 / sm_89) — cu124 (torch 2.4+) is sufficient:
 pip install torch --index-url https://download.pytorch.org/whl/cu124
 ```
 
-Verify CUDA works:
+Verify:
 
 ```bash
 python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
@@ -88,26 +108,26 @@ python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_
 
 ### 3. Install llama-cpp-python with CUDA
 
-PyPI ships only a CPU build. Install abetlen's prebuilt CUDA wheel (Windows / Python 3.12 / cu124):
+PyPI ships only a CPU build. Install abetlen's prebuilt CUDA wheel (Python 3.12 / cu124 / Windows):
 
 ```bash
 pip install https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.4-cu124/llama_cpp_python-0.3.4-cp312-cp312-win_amd64.whl --force-reinstall --no-deps
 ```
 
-If you need to build from source instead, install Visual Studio Build Tools (with the C++ workload) plus the CUDA toolkit, then:
+To build from source instead (Visual Studio Build Tools + CUDA toolkit required):
 
 ```bash
 set CMAKE_ARGS=-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=120
 pip install llama-cpp-python --force-reinstall --no-cache-dir
 ```
 
-(Substitute `CMAKE_CUDA_ARCHITECTURES=89` etc. for non-Blackwell GPUs.)
+(Substitute `CMAKE_CUDA_ARCHITECTURES=89` etc. for non-Blackwell.)
 
-Verify CUDA llama is detected:
+Verify CUDA is wired in:
 
 ```bash
 python -c "from llama_cpp import llama_cpp; print(llama_cpp.llama_print_system_info().decode())"
-# Should print:  ggml_cuda_init: found 1 CUDA devices: ...
+# Should mention: ggml_cuda_init: found 1 CUDA devices
 ```
 
 ### 4. Install the project
@@ -123,33 +143,72 @@ python scripts/download_models.py --qwen-only
 # Pulls qwen2.5-7b-instruct-q4_k_m-{00001,00002}-of-00002.gguf into models/
 ```
 
-### 6. Run
+Whisper `large-v3-turbo` (~1.5 GB) downloads to the HF cache automatically on first Phase 1 launch.
+
+### 6. Run Phase 1
 
 ```bash
-# Slice 3 — EN/ZH console transcription:
-python main.py --mode console
-#   [00:00:03] EN: We need to align on the timeline before the demo.
-#              ZH: 我们需要在 demo 之前对齐时间线。 (lat=620ms)
-
-# Slice 0/1 — config check (no pipeline):
+# Default — GUI mode (tray icon + floating subtitle bar):
 python main.py
+#   1. tray icon turns gray (idle) in the system tray
+#   2. press Ctrl+Alt+T (or right-click tray → Start) to begin a session
+#   3. ~10 s of model warm-up, then the bar shows EN + ZH on incoming Teams audio
+#   4. Ctrl+Alt+T again to stop; sessions/<ts>/ written
+
+# To reposition the subtitle bar once:
+python main.py --unlock
+#   - bar appears with a yellow border in drag mode
+#   - drag to where you want it
+#   - double-click to lock + persist position to config.yaml
+
+# Console debug mode (terminal output, no GUI):
+python main.py --mode console
 ```
 
-The first run also downloads Whisper `large-v3-turbo` (~1.5 GB) into the Hugging Face cache.
+Quit cleanly with the tray menu's **Quit**, `Ctrl+Q` while the bar is focused, or `Ctrl+C` in the terminal.
 
-### 7. Verify
+### 7. Run Phase 2 on a saved session
+
+```bash
+python -m meet_mirror_notes sessions/2026-04-30_13-20-51 --speakers 2
+```
+
+Produces `transcript_with_speakers.json` and `notes.md` next to the session's `audio.wav`. ~45 s wall time on a 3-min session; ~3–5 min for an hour-long meeting.
+
+Useful flags:
+
+- `--speakers N` — number of speakers (default 2)
+- `--asr-only` / `--summary-only` — run just stage 1 or just stage 2
+- `--force-asr` / `--force-summary` — re-run a stage even if its output exists
+- `--n-ctx 32768` — bump the summarizer context for >2-hour meetings (default 16384, automatic map-reduce kicks in beyond ~80 min)
+
+### 8. Verify the install
 
 ```bash
 pytest -q
 ruff check src/ tests/ scripts/
-python scripts/capture_test.py                            # 10 s loopback record + playback
-python scripts/benchmark.py path/to/sample.wav            # Whisper latency / RTF
-python scripts/benchmark.py --translator                  # Qwen p50/p95 over 10 sentences
+python scripts/capture_test.py                       # 10 s loopback + playback
+python scripts/benchmark.py path/to/sample.wav       # Whisper latency / RTF
+python scripts/benchmark.py --translator             # Qwen P50/P95 over 10 canned sentences
 ```
 
-## Installation notes
+## Common gotchas
 
-_Subtitle UI (PyQt6) lands in Slice 4. Tray + hotkey in Slice 5. See the [Phase 1 plan](docs/superpowers/plans/2026-04-30-meet-mirror-phase1-plan.md)._
+- **Translator silently dies during load.** Almost always a stuck `python.exe` from a previous session holding GPU memory. `tasklist | findstr python` then `taskkill /IM python.exe /F`. For verbose llama.cpp init output to triage when it doesn't go away, `set LLAMA_VERBOSE=1` before `python main.py`.
+- **Whisper hangs at "Loading Whisper..." on a corp network.** `faster-whisper` does an HF HEAD/etag round-trip even with the cache populated. We auto-set `HF_HUB_OFFLINE=1` when the cache exists; if you want it explicit, `set HF_HUB_OFFLINE=1` before launch.
+- **Loopback only catches the *other* party.** Your own microphone is excluded by design (the spec captures only the system audio output). For a sanity check that the audio path works, play a YouTube video — you should see EN lines within ~10 s.
+- **Tray icon stays gray after toggle.** First fix: wait until you see `ASR worker ready` in the log (~10 s warm). If still gray, kill orphan python processes per the first bullet.
+
+## Roadmap
+
+| Version | Status | Scope |
+|---|---|---|
+| `v0.1.0` | shipped | Phase 1 — live EN→ZH overlay (S0–S6) |
+| `v0.2.0` | shipped | Phase 2 alpha — single-pass summarizer |
+| `v0.2.1` | current | Phase 2 — map-reduce + LLAMA_VERBOSE diagnostic |
+| _next_ | TBD | follow-up work: e2e fixture wav, integration test, Phase 2 unit tests, prompt obedience tweaks |
+
+The original Phase 1 spec mentioned `microsoft/VibeVoice-ASR-7B` for Phase 2 ASR + diarization. That repo doesn't exist publicly (Microsoft's VibeVoice is TTS-only), so Phase 2 pivoted to Whisper + Resemblyzer + sklearn clustering. See [Phase 2 spec § 6.1 + § 11](docs/superpowers/specs/2026-04-30-meet-mirror-phase2-notes-design.md) for details.
 
 ## License
 
