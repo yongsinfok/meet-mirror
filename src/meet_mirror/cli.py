@@ -45,6 +45,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="gui",
         help="gui: floating subtitle bar (default). console: print to stdout (debug)",
     )
+    parser.add_argument(
+        "--unlock",
+        action="store_true",
+        help="(gui only) Start in drag mode so the subtitle bar is interactive; "
+        "drop it where you want it then double-click to lock + persist position.",
+    )
     return parser.parse_args(argv)
 
 
@@ -94,6 +100,34 @@ def run_console(cfg: Config) -> int:
     return 0
 
 
+def run_gui(cfg: Config, config_path: Path, unlock: bool) -> int:
+    from PyQt6.QtWidgets import QApplication
+
+    from .pipeline import Pipeline
+    from .subtitle_ui import SubtitleWindow
+
+    app = QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(True)
+
+    pipeline = Pipeline(cfg)
+    window = SubtitleWindow(
+        subtitle_q=pipeline.subtitle_q,
+        config=cfg,
+        config_path=config_path,
+        unlock=unlock,
+    )
+
+    pipeline.start()
+    window.show()
+    logger.info("Meet Mirror ready (gui mode). Close the bar or quit the app to stop.")
+
+    try:
+        exit_code = app.exec()
+    finally:
+        pipeline.stop()
+    return exit_code
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
@@ -110,10 +144,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.mode == "console":
         return run_console(cfg)
 
-    # gui mode: floating subtitle UI lands in Slice 4
-    print("Meet Mirror ready")
-    print("(GUI mode pending Slice 4 — use --mode console for live transcription.)")
-    return 0
+    return run_gui(cfg, config_path, unlock=args.unlock)
 
 
 if __name__ == "__main__":
