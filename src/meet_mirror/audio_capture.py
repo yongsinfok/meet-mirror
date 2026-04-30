@@ -8,6 +8,7 @@ import numpy as np
 import soundcard as sc
 from loguru import logger
 
+from .queue_utils import put_drop_oldest
 from .types import AudioChunk
 
 
@@ -38,9 +39,34 @@ class AudioCapture(threading.Thread):
         return sc.get_microphone(id=str(speaker.name), include_loopback=True)
 
     def run(self) -> None:
+        backoff_s = 1.0
+        attempts = 0
+        max_attempts = 3
+
+        while attempts < max_attempts:
+            try:
+                self._capture_loop()
+                return  # clean exit on stop_event
+            except Exception as e:
+                attempts += 1
+                logger.warning(
+                    f"Audio capture failed (attempt {attempts}/{max_attempts}): {e}"
+                )
+                if attempts >= max_attempts or self.stop_event.is_set():
+                    break
+                if self.stop_event.wait(backoff_s):
+                    return
+                backoff_s = min(backoff_s * 2, 4.0)
+        logger.error(
+            "Audio capture giving up after 3 retries; "
+            "pipeline will run without input until restart"
+        )
+
+    def _capture_loop(self) -> None:
         mic = self._open_loopback()
         logger.info(
-            f"Audio capture: loopback={mic.name} sr={self.sample_rate} block={self.block_ms}ms"
+            f"Audio capture: loopback={mic.name} "
+            f"sr={self.sample_rate} block={self.block_ms}ms"
         )
         with mic.recorder(
             samplerate=self.sample_rate, channels=1, blocksize=self.blocksize
@@ -53,11 +79,7 @@ class AudioCapture(threading.Thread):
                 chunk = AudioChunk(
                     samples=samples, ts_start=ts_start, ts_end=ts_end
                 )
-                self.out_q.put(chunk)
+                put_drop_oldest(self.out_q, chunk, "audio_q")
                 if self.persist_q is not None:
-                    try:
-                        self.persist_q.put_nowait(chunk)
-                    except queue.Full:
-                        # Persistence is best-effort; Slice 6 will tighten this.
-                        pass
+                    put_drop_oldest(self.persist_q, chunk, "audio_q_persist")
         logger.info("Audio capture stopped")
