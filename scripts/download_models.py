@@ -1,54 +1,98 @@
 """Download model weights into ./models/.
 
-Slice 0: stub. Prints required artefacts and exits.
-Slice 2 fills in faster-whisper auto-download via WhisperModel cache.
-Slice 3 fills in Qwen GGUF download from HuggingFace + sha256 verification.
+- Whisper large-v3-turbo: auto-downloads to the HuggingFace cache on first
+  WhisperModel(...) call. We just print the trigger.
+- Qwen2.5-7B-Instruct Q4_K_M GGUF: pulled here into ./models/ with SHA256
+  logged for identity verification.
 """
 
 from __future__ import annotations
 
+import argparse
+import hashlib
 import sys
 from pathlib import Path
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
 
-REQUIRED = [
-    {
-        "name": "faster-whisper large-v3-turbo",
-        "purpose": "Real-time English speech-to-text (Slice 2).",
-        "how_to_get": (
-            "Auto-downloads on first WhisperModel('large-v3-turbo') call into "
-            "the HuggingFace cache (~/.cache/huggingface/hub). No manual step."
-        ),
-        "size_gb": 1.6,
-    },
-    {
-        "name": "Qwen2.5-7B-Instruct-Q4_K_M GGUF",
-        "purpose": "Local English-to-Chinese translator (Slice 3).",
-        "how_to_get": (
-            "Download from "
-            "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-GGUF/resolve/main/"
-            "qwen2-5-7b-instruct-q4_k_m.gguf "
-            "into models/qwen2.5-7b-instruct-q4_k_m.gguf "
-            "(automated in Slice 3 with sha256 verification)."
-        ),
-        "size_gb": 4.4,
-    },
+QWEN_REPO = "Qwen/Qwen2.5-7B-Instruct-GGUF"
+QWEN_FILES = [
+    "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+    "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf",
 ]
+# llama.cpp loads the whole split set when pointed at the first shard.
+QWEN_PRIMARY = QWEN_FILES[0]
+
+
+def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for block in iter(lambda: f.read(chunk), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def download_qwen() -> Path:
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    from huggingface_hub import hf_hub_download
+
+    primary: Path | None = None
+    for fname in QWEN_FILES:
+        target = MODELS_DIR / fname
+        if target.exists():
+            size_gb = target.stat().st_size / 1e9
+            print(f"[skip] {target.name} already present ({size_gb:.2f} GB)")
+            print(f"  sha256: {sha256_file(target)}")
+        else:
+            print(f"Downloading {QWEN_REPO} :: {fname} ...")
+            cached = hf_hub_download(
+                repo_id=QWEN_REPO,
+                filename=fname,
+                local_dir=str(MODELS_DIR),
+            )
+            p = Path(cached)
+            size_gb = p.stat().st_size / 1e9
+            print(f"  Saved: {p} ({size_gb:.2f} GB)")
+            print(f"  sha256: {sha256_file(p)}")
+            target = p
+        if fname == QWEN_PRIMARY:
+            primary = target
+
+    assert primary is not None
+    return primary
+
+
+def whisper_status() -> None:
+    print("Whisper large-v3-turbo:")
+    print("  - Auto-downloads to HuggingFace cache on first WhisperModel(...) call.")
+    print("  - Repo: mobiuslabsgmbh/faster-whisper-large-v3-turbo")
+    print("  - Trigger: `python main.py --mode console`")
+    print()
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(prog="download_models")
+    parser.add_argument(
+        "--whisper-only",
+        action="store_true",
+        help="Print Whisper info, skip Qwen download",
+    )
+    parser.add_argument(
+        "--qwen-only",
+        action="store_true",
+        help="Skip Whisper info, download Qwen only",
+    )
+    args = parser.parse_args()
+
     print(f"Models directory: {MODELS_DIR}")
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
     print()
-    print("Required model artefacts:")
-    print()
-    for item in REQUIRED:
-        print(f"- {item['name']} (~{item['size_gb']:.1f} GB)")
-        print(f"    Purpose: {item['purpose']}")
-        print(f"    How:     {item['how_to_get']}")
-        print()
-    print("This script is a stub in Slice 0; actual downloads land in Slice 2 and Slice 3.")
+
+    if not args.qwen_only:
+        whisper_status()
+
+    if not args.whisper_only:
+        download_qwen()
+
     return 0
 
 

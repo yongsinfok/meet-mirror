@@ -24,7 +24,7 @@ class AsrConfig(BaseModel):
 
 
 class TranslatorConfig(BaseModel):
-    model_path: str = "models/qwen2.5-7b-instruct-q4_k_m.gguf"
+    model_path: str = "models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
     n_gpu_layers: int = -1
     n_ctx: int = 8192
     temperature: float = 0.2
