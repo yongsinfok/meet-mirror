@@ -54,30 +54,70 @@ Four worker threads communicate through queues; the subtitle UI runs on the Qt m
 
 ## Quick start
 
-> **Note:** This is the Slice 0 skeleton. It loads `config.yaml` and exits — there is no audio capture, ASR, or UI yet. Subsequent slices add those.
+> **Status:** Slice 2 in progress. WASAPI loopback capture + Whisper ASR work in `--mode console`. Translator (Slice 3) and subtitle UI (Slice 4) not yet implemented.
 
-Requirements: Python 3.11+ (3.11 or 3.12 recommended). Later slices add CUDA-only dependencies.
+Requirements: Python 3.12 (3.13/3.14 lack ML wheels at the time of writing), NVIDIA GPU + driver supporting CUDA 12.8, ~3 GB free disk for the Whisper model cache.
+
+### 1. Create the venv
 
 ```bash
 git clone https://github.com/yongsinfok/meet-mirror.git
 cd meet-mirror
-python -m venv .venv
-.venv\Scripts\activate          # Windows
-pip install -e ".[dev]"
-python main.py
-# → Loaded config from config.yaml
-# → Meet Mirror ready
+py -3.12 -m venv .venv
+.venv\Scripts\activate
+python -m pip install --upgrade pip
 ```
 
-To see the model artefacts that later slices will need:
+### 2. Install PyTorch with CUDA support
+
+PyTorch wheels are not on PyPI; install them from the official PyTorch index **before** the editable install. Use the wheel set that matches your GPU:
 
 ```bash
-python scripts/download_models.py
+# RTX 50 / Blackwell (sm_120) — needs cu128 wheels (torch 2.7+):
+pip install torch --index-url https://download.pytorch.org/whl/cu128
+
+# RTX 30 / 40 (sm_86 / sm_89) — cu124 wheels (torch 2.4+) are sufficient:
+pip install torch --index-url https://download.pytorch.org/whl/cu124
 ```
 
-## Installation
+Verify CUDA works:
 
-_Full installation (with CUDA, Whisper, Qwen, PyQt) lands in Slice 2 onward. See the [Phase 1 plan](docs/superpowers/plans/2026-04-30-meet-mirror-phase1-plan.md)._
+```bash
+python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
+### 3. Install the project
+
+```bash
+pip install -e ".[dev]"
+```
+
+### 4. Run
+
+```bash
+# Slice 2 — console transcription (English only):
+python main.py --mode console
+#   Plays Teams audio with English speech →
+#   [00:00:03] EN: We need to align on the timeline before the demo.
+
+# Slice 0/1 — config check (no pipeline):
+python main.py
+```
+
+The first run downloads the Whisper `large-v3-turbo` model (~1.5 GB) into the Hugging Face cache.
+
+### 5. Verify
+
+```bash
+pytest -q
+ruff check src/ tests/ scripts/
+python scripts/capture_test.py            # 10 s loopback record + playback
+python scripts/benchmark.py path/to/sample.wav  # Whisper latency / RTF
+```
+
+## Installation notes
+
+_Translator (Qwen2.5-7B GGUF + llama-cpp-python) lands in Slice 3. Subtitle UI (PyQt6) in Slice 4. Tray + hotkey in Slice 5. See the [Phase 1 plan](docs/superpowers/plans/2026-04-30-meet-mirror-phase1-plan.md)._
 
 ## License
 
