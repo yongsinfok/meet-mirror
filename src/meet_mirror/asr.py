@@ -1,15 +1,31 @@
 from __future__ import annotations
 
+import os
 import queue
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
 from loguru import logger
 
 from .config import AsrConfig
 from .types import AudioChunk, EnSegment
+
+
+def _whisper_is_cached() -> bool:
+    """True if any whisper snapshot exists in the HF hub cache."""
+    cache_dir = Path.home() / ".cache" / "huggingface" / "hub"
+    if not cache_dir.exists():
+        return False
+    for p in cache_dir.iterdir():
+        if not p.is_dir() or "whisper" not in p.name.lower():
+            continue
+        snapshots = p / "snapshots"
+        if snapshots.exists() and any(snapshots.iterdir()):
+            return True
+    return False
 
 
 @dataclass
@@ -153,6 +169,13 @@ class AsrWorker(threading.Thread):
         )
 
     def run(self) -> None:
+        # Prevent faster-whisper from doing an HF HEAD/etag round-trip on
+        # every start when the cache is already populated. Corp networks
+        # and HF outages otherwise stall WhisperModel(...) for minutes.
+        if "HF_HUB_OFFLINE" not in os.environ and _whisper_is_cached():
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            logger.info("Whisper cache hit; setting HF_HUB_OFFLINE=1")
+
         from faster_whisper import WhisperModel
 
         logger.info(
