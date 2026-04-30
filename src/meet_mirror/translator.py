@@ -72,15 +72,20 @@ class TranslatorWorker(threading.Thread):
         )
 
     def _load_llm(self) -> object:
+        import os as _os
+
         from llama_cpp import Llama
 
+        # Verbose llama.cpp output is opt-in via env var so the noisy
+        # init log only appears when debugging silent crashes.
+        verbose = _os.environ.get("LLAMA_VERBOSE", "0") == "1"
         logger.info(f"Loading Qwen translator: {self.config.model_path}")
         return Llama(
             model_path=self.config.model_path,
             n_gpu_layers=self.config.n_gpu_layers,
             n_ctx=self.config.n_ctx,
             flash_attn=True,
-            verbose=False,
+            verbose=verbose,
         )
 
     def _translate(self, en_text: str, temperature: float) -> str:
