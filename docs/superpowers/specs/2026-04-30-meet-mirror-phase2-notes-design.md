@@ -135,29 +135,50 @@ JSON schema for `transcript_with_speakers.json`:
 
 ## 6. Components
 
-### 6.1 VibeVoice ASR (`vibevoice_asr.py`)
+### 6.1 ASR + Diarization (`asr_diarize.py`)
 
-- Model: `microsoft/VibeVoice-ASR-7B` via Hugging Face Transformers (loaded with `trust_remote_code=True` per the model card; we'll review the custom code before pinning a commit hash).
-- Quantization: bitsandbytes 4-bit (`load_in_4bit=True`) is the first attempt. Estimated VRAM at Q4 is ~10–12 GB; combined with Whisper / Qwen *not* loaded (Phase 2 is its own process), this fits 16 GB comfortably.
-- If 4-bit doesn't fit or quality regresses unacceptably, fall back to 8-bit with `device_map="auto"` so HF accelerate spills layers to CPU. The CLI exposes `--bits {4,8}` to choose.
-- Pinned weight commit: TBD on first download; SHA256 of every `.safetensors` shard recorded in `BENCHMARKS.md`.
-- Inference path:
-  ```python
-  output = model.generate(
-      inputs=audio_inputs,
-      task="transcribe",
-      include_speaker_labels=True,   # VibeVoice-specific kwarg
-      include_timestamps=True,
-      max_new_tokens=4096,
-  )
-  ```
-  Exact API depends on VibeVoice's chat template / generation interface; we will validate on first run and pin the call shape in this spec before merging the implementation.
-- Audio chunking: VibeVoice-ASR-7B context is 30 s of audio per generate call. Long sessions are split into overlapping 30 s windows with 2 s overlap; segments at chunk boundaries are deduplicated by start_s.
-- Output: list of `TranscriptSegment`, then serialized to JSON.
+**2026-04-30 update:** the Phase 1 spec assumed `microsoft/VibeVoice-ASR-7B` existed; an HF probe returned 401 (no such public repo — Microsoft's VibeVoice family is TTS only). Pivot to a Whisper + Resemblyzer + clustering pipeline.
 
-**Open question (must resolve before implementation):**
-- VibeVoice's exact API for speaker-labelled output. Model card claims it; if the kwarg or output format differs from the assumption above, this section is rewritten.
-- VRAM headroom under Q4: needs profiling on the target hardware. If we exceed 14 GB, we add layer offload as default rather than a fallback.
+**Components:**
+
+- **ASR:** `faster-whisper large-v3-turbo` reused from Phase 1. We pull word-level timestamps via `transcribe(..., word_timestamps=True)` and group them into utterance segments using the existing VAD silence rule (300 ms intra-turn pause merges, 800 ms breaks segments).
+- **Speaker embeddings:** `Resemblyzer.VoiceEncoder` (~30 MB CPU model, MIT license, no HF gating). Per utterance segment, take the mean of frame-level embeddings over the segment's audio span. Output: 256-d vector per segment.
+- **Clustering:** `sklearn.cluster.AgglomerativeClustering(n_clusters=N, linkage="average", metric="cosine")`. `N` defaults to 2 (typical Teams call) and is overridable via `--speakers`.
+
+**Pipeline:**
+
+```
+audio.wav (16 kHz mono from Phase 1)
+   │
+   ▼
+faster-whisper.transcribe(word_timestamps=True)
+   │
+   ▼
+group words into utterances (silence ≥ 800 ms breaks; ≥ 300 ms is intra-turn)
+   │
+   ▼  per utterance, slice audio.wav[start_s:end_s]
+Resemblyzer.embed_utterance() → 256-d vec
+   │
+   ▼  stack vectors, normalise
+AgglomerativeClustering(N=args.speakers, cosine, average)
+   │
+   ▼  attach cluster id to each utterance
+list[TranscriptSegment]  → transcript_with_speakers.json
+```
+
+**Quality notes:**
+
+- Clusters are anonymous: cluster `0` is mapped to `"Speaker 1"`, cluster `1` to `"Speaker 2"`, etc. Order is by first appearance in the audio (not by cluster centroid distance, which is meaningless to a reader).
+- Resemblyzer struggles on segments shorter than ~1 s. Utterances shorter than 1 s inherit the cluster of the previous utterance (continuation heuristic) instead of being misclassified.
+- Overlapping speech (cross-talk) is **not** handled — both speakers' words go into a single utterance. Acceptable for the spec §2 non-goal of overlap detection.
+
+**Pinned weights:** Resemblyzer ships its model with the pip package (no HF download). Whisper turbo cache is shared with Phase 1.
+
+**VRAM:** Whisper FP16 ≈ 1.6 GB, Resemblyzer is CPU-resident (~150 MB RAM), sklearn is CPU. Total Phase-2-stage-1 GPU footprint ≈ 1.6 GB. Easy fit alongside Phase 1's ~7 GB if both are running, though we still recommend not running them simultaneously.
+
+**Open question (resolved before merge of Slice 2):**
+
+- Resemblyzer accuracy on real Teams loopback audio (lossy, codec-compressed). Benchmark on the user's actual session recordings; if false-merge rate is too high we add `simple_diarizer` (SpeechBrain ECAPA) as a `--diarizer speechbrain` opt-in.
 
 ### 6.2 Summarizer (`summarizer.py`)
 
@@ -263,13 +284,19 @@ Fixtures: a 60-s 2-speaker English wav (recorded by user) + the matching expecte
 
 ---
 
-## 11. Open Questions (must resolve before plan)
+## 11. Open Questions
 
-1. **VibeVoice-ASR-7B exact API.** Model card phrasing implies speaker labels and timestamps come from a single `generate` call but the kwarg names and output structure must be confirmed by loading the model on the target hardware. Spec §6.1 will be rewritten once verified.
-2. **Q4 fit.** If 4-bit quant via bitsandbytes doesn't actually fit in 16 GB or produces unusable transcription quality, the fallback path (8-bit with offload) becomes the default. Need a 1-shot benchmark before drafting the plan.
-3. **Speaker count assumption.** VibeVoice handles 2-speaker dialogues in its training; behaviour on 3+ speaker meetings is unverified. If diarisation accuracy collapses past 2 speakers, we may need to add a separate diarisation pass (pyannote) — out of scope unless this fails.
-4. **Hour-long context for Qwen.** `n_ctx=32768` is plausible but the GGUF we're using was loaded with `n_ctx=8192` in Phase 1. We need to verify the model file supports the larger context (it does per Qwen's training, just not pre-allocated by Phase 1's runtime).
-5. **Re-running cost.** VibeVoice at 0.6× realtime is fine for a one-off note-taking pass but costly to iterate on prompt changes. Consider caching `transcript_with_speakers.json` aggressively (already in design) and optionally exposing a `--summary-only` workflow.
+**Resolved 2026-04-30:**
+
+- ~~VibeVoice-ASR-7B API~~ — repo doesn't exist publicly; pivoted to Whisper + Resemblyzer + clustering (see §6.1).
+- ~~Q4 VRAM fit on Blackwell~~ — N/A; new pipeline uses Whisper FP16 (~1.6 GB) + CPU embedding.
+- ~~Speaker count assumption~~ — N/A; explicit `--speakers` flag, default 2.
+
+**Still open, to address during implementation:**
+
+1. **Hour-long context for Qwen.** `n_ctx=32768` is plausible but the GGUF we're using was loaded with `n_ctx=8192` in Phase 1. Need to verify the model file supports the larger context (it does per Qwen's training, just not pre-allocated by Phase 1's runtime). Mitigation: map-reduce path in §6.2 keeps single calls under 8 k tokens.
+2. **Resemblyzer accuracy on Teams loopback.** Compressed/lossy audio may degrade speaker embeddings. Plan: bench on real session, fall back to SpeechBrain ECAPA if false-merge rate is bad.
+3. **Re-running cost.** Whisper transcribe + Resemblyzer pass is dominated by Whisper's 0.03× RTF (already measured live). 60-min meeting → ~2 min. Iteration on summarizer prompt changes is essentially free thanks to the cached `transcript_with_speakers.json`.
 
 ---
 

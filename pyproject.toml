@@ -24,6 +24,8 @@ dependencies = [
     "huggingface_hub>=0.20",
     "PyQt6>=6.6",
     "keyboard>=0.13",
+    "resemblyzer>=0.1.4",
+    "scikit-learn>=1.3",
 ]
 
 [project.optional-dependencies]
@@ -34,10 +36,11 @@ dev = [
 
 [project.scripts]
 meet-mirror = "meet_mirror.cli:main"
+meet-mirror-notes = "meet_mirror_notes.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["meet_mirror*"]
+include = ["meet_mirror*", "meet_mirror_notes*"]
 
 [tool.ruff]
 line-length = 100
