@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import queue
 import sys
+import threading
+import time
 from pathlib import Path
 
 from loguru import logger
@@ -41,6 +44,48 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def _format_relative(t_abs: float, session_start: float) -> str:
+    delta = max(0.0, t_abs - session_start)
+    h = int(delta // 3600)
+    m = int((delta % 3600) // 60)
+    s = int(delta % 60)
+    return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def run_console(cfg: Config) -> int:
+    from .pipeline import Pipeline
+
+    pipeline = Pipeline(cfg)
+    stop_consumer = threading.Event()
+    session_start = time.time()
+
+    def consume() -> None:
+        while not stop_consumer.is_set():
+            try:
+                seg = pipeline.asr_q.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            ts = _format_relative(seg.audio_ts_start, session_start)
+            print(f"[{ts}] EN: {seg.text}", flush=True)
+
+    consumer = threading.Thread(target=consume, name="ConsoleConsumer", daemon=True)
+
+    pipeline.start()
+    consumer.start()
+    print("Meet Mirror ready (console mode). Ctrl+C to exit.", flush=True)
+
+    try:
+        while not pipeline.stop_event.is_set():
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\nShutting down...", flush=True)
+    finally:
+        pipeline.stop()
+        stop_consumer.set()
+        consumer.join(timeout=2.0)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
 
@@ -54,7 +99,12 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("Loaded config from {}", config_path)
     logger.info("Mode: {}", args.mode)
 
+    if args.mode == "console":
+        return run_console(cfg)
+
+    # gui mode: floating subtitle UI lands in Slice 4
     print("Meet Mirror ready")
+    print("(GUI mode pending Slice 4 — use --mode console for live transcription.)")
     return 0
 
 
