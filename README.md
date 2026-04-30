@@ -86,38 +86,70 @@ Verify CUDA works:
 python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 ```
 
-### 3. Install the project
+### 3. Install llama-cpp-python with CUDA
+
+PyPI ships only a CPU build. Install abetlen's prebuilt CUDA wheel (Windows / Python 3.12 / cu124):
+
+```bash
+pip install https://github.com/abetlen/llama-cpp-python/releases/download/v0.3.4-cu124/llama_cpp_python-0.3.4-cp312-cp312-win_amd64.whl --force-reinstall --no-deps
+```
+
+If you need to build from source instead, install Visual Studio Build Tools (with the C++ workload) plus the CUDA toolkit, then:
+
+```bash
+set CMAKE_ARGS=-DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=120
+pip install llama-cpp-python --force-reinstall --no-cache-dir
+```
+
+(Substitute `CMAKE_CUDA_ARCHITECTURES=89` etc. for non-Blackwell GPUs.)
+
+Verify CUDA llama is detected:
+
+```bash
+python -c "from llama_cpp import llama_cpp; print(llama_cpp.llama_print_system_info().decode())"
+# Should print:  ggml_cuda_init: found 1 CUDA devices: ...
+```
+
+### 4. Install the project
 
 ```bash
 pip install -e ".[dev]"
 ```
 
-### 4. Run
+### 5. Download Qwen GGUF (~4.4 GB)
 
 ```bash
-# Slice 2 — console transcription (English only):
+python scripts/download_models.py --qwen-only
+# Pulls qwen2.5-7b-instruct-q4_k_m-{00001,00002}-of-00002.gguf into models/
+```
+
+### 6. Run
+
+```bash
+# Slice 3 — EN/ZH console transcription:
 python main.py --mode console
-#   Plays Teams audio with English speech →
 #   [00:00:03] EN: We need to align on the timeline before the demo.
+#              ZH: 我们需要在 demo 之前对齐时间线。 (lat=620ms)
 
 # Slice 0/1 — config check (no pipeline):
 python main.py
 ```
 
-The first run downloads the Whisper `large-v3-turbo` model (~1.5 GB) into the Hugging Face cache.
+The first run also downloads Whisper `large-v3-turbo` (~1.5 GB) into the Hugging Face cache.
 
-### 5. Verify
+### 7. Verify
 
 ```bash
 pytest -q
 ruff check src/ tests/ scripts/
-python scripts/capture_test.py            # 10 s loopback record + playback
-python scripts/benchmark.py path/to/sample.wav  # Whisper latency / RTF
+python scripts/capture_test.py                            # 10 s loopback record + playback
+python scripts/benchmark.py path/to/sample.wav            # Whisper latency / RTF
+python scripts/benchmark.py --translator                  # Qwen p50/p95 over 10 sentences
 ```
 
 ## Installation notes
 
-_Translator (Qwen2.5-7B GGUF + llama-cpp-python) lands in Slice 3. Subtitle UI (PyQt6) in Slice 4. Tray + hotkey in Slice 5. See the [Phase 1 plan](docs/superpowers/plans/2026-04-30-meet-mirror-phase1-plan.md)._
+_Subtitle UI (PyQt6) lands in Slice 4. Tray + hotkey in Slice 5. See the [Phase 1 plan](docs/superpowers/plans/2026-04-30-meet-mirror-phase1-plan.md)._
 
 ## License
 
