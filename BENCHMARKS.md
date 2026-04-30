@@ -107,4 +107,33 @@ Spec §9 budget is ~8.1 GB target / 9 GB acceptance — measured 7 GB ✓.
 
 ---
 
-## Slice 6 — TBD (full e2e + 60-min soak)
+## Slice 6 — error handling + observability
+
+### Fault paths added
+
+| Failure | Detection | Response |
+|---|---|---|
+| Audio device disconnect / change | exception from `recorder.record()` | `AudioCapture._capture_loop` exception → exponential backoff 1s→2s→4s, max 3 retries, then log error and exit worker (pipeline runs without input until tray toggle). |
+| Whisper CUDA OOM | `RuntimeError` with `out of memory` substring from `model.transcribe()` | Drop the model, `torch.cuda.empty_cache()`, reload as `medium`. One-shot — never auto-upgrades back. |
+| Whisper transcribe other failure | any other `RuntimeError` from `model.transcribe()` | Log with stack trace; skip current segment; loop continues. |
+| Llama translation hang / >5s | `concurrent.futures` `TimeoutError` after 5 s on `create_chat_completion` | Skip segment; raise warning; ASR queue keeps draining without blocking. |
+| Llama returns no CJK | post-decode CJK count = 0 | Retry once at `temperature=0.5`; if still empty, emit a `ZhSegment` with `zh_text=""` and warn. |
+| Worker uncaught exception | top-level try/except wrapping `_run_inner()` | Log with stack; restart up to 3 times with 1 s → 4 s back-off; degraded mode after that. |
+| Queue full (downstream slower than upstream) | `queue.Full` from `put_nowait` | `put_drop_oldest()` helper drops the oldest entry, logs the queue name, then re-enqueues the new item. Applied to `audio_q`, `audio_q_persist`, `asr_q`, `subtitle_q`, `subtitle_q_persist`. |
+
+### Status heartbeat
+
+Pipeline emits an INFO-level status line every 30 s with current queue depths and last observed end-to-end latency:
+
+```
+status: audio_q=N asr_q=N sub_q=N last_e2e_ms=NNN
+```
+
+`last_e2e_ms` is `time_emitted - audio_ts_end` for the most recently produced `ZhSegment`. With normal-pause English speech this should sit at 1500–3000 ms; persistent values >5000 ms indicate the LLM is keeping up with input but the perceived freshness has slipped (consider lowering `asr.max_utterance_s`).
+
+### Deferred to a follow-up slice
+
+- `scripts/e2e_test.py` against a checked-in 5-min English meeting wav fixture. Needs the user to record + commit the fixture (gitignored by default per `.gitignore` rule on `tests/fixtures/`), so blocked on a non-code step.
+- `tests/test_pipeline.py` integration test driving fake AudioChunks through mocked ASR/Translator workers. Would replicate the existing dogfood path; lower ROI than the unit tests we already have for VadStateMachine, TranslatorWorker, and the persistence writers.
+- Operator-visible UX for degraded mode (currently logged only). Will be added when a notification surface lands beyond the tray icon.
+
