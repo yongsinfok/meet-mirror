@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import concurrent.futures
 import queue
 import threading
 import time
@@ -8,7 +9,10 @@ from collections import deque
 from loguru import logger
 
 from .config import TranslatorConfig
+from .queue_utils import put_drop_oldest
 from .types import EnSegment, ZhSegment
+
+_TRANSLATION_TIMEOUT_S = 5.0
 
 SYSTEM_PROMPT = (
     "你是专业的实时翻译员,把英文商务会议对话翻译成中文。\n"
@@ -50,6 +54,7 @@ class TranslatorWorker(threading.Thread):
         translator_config: TranslatorConfig,
         llm: object | None = None,
         persist_q: queue.Queue[ZhSegment] | None = None,
+        pipeline_ref: object | None = None,
     ) -> None:
         super().__init__(name="TranslatorWorker", daemon=True)
         self.in_q = in_q
@@ -61,6 +66,10 @@ class TranslatorWorker(threading.Thread):
         )
         self._llm = llm  # if provided (tests), skip Llama load
         self.persist_q = persist_q
+        self.pipeline_ref = pipeline_ref
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="LlamaCall"
+        )
 
     def _load_llm(self) -> object:
         from llama_cpp import Llama
@@ -76,34 +85,52 @@ class TranslatorWorker(threading.Thread):
 
     def _translate(self, en_text: str, temperature: float) -> str:
         messages = build_messages(SYSTEM_PROMPT, list(self.history), en_text)
-        resp = self._llm.create_chat_completion(  # type: ignore[union-attr]
-            messages=messages,
-            temperature=temperature,
-            max_tokens=self.config.max_tokens,
-            stop=["\n\n"],
-        )
+
+        def _call() -> dict:
+            return self._llm.create_chat_completion(  # type: ignore[union-attr]
+                messages=messages,
+                temperature=temperature,
+                max_tokens=self.config.max_tokens,
+                stop=["\n\n"],
+            )
+
+        future = self._executor.submit(_call)
+        try:
+            resp = future.result(timeout=_TRANSLATION_TIMEOUT_S)
+        except concurrent.futures.TimeoutError as e:
+            # We can't actually cancel a running llama.cpp call, but we
+            # can stop waiting for it. The next translation will queue
+            # behind this one and may itself time out — acceptable for
+            # the live use case (subtitle freshness > completeness).
+            raise TimeoutError(
+                f"translation exceeded {_TRANSLATION_TIMEOUT_S}s timeout"
+            ) from e
         return resp["choices"][0]["message"]["content"].strip()
 
     def process_one(self, seg: EnSegment) -> ZhSegment | None:
         """Translate a single segment. Returns None when input is filtered out
-        (too short). Encapsulates the core logic for testing."""
+        (too short) or the translation timed out."""
         if alpha_count(seg.text) < 2:
             logger.debug(f"Skip too-short EN: {seg.text!r}")
             return None
 
         t0 = time.perf_counter()
-        zh = self._translate(seg.text, temperature=self.config.temperature)
+        try:
+            zh = self._translate(seg.text, temperature=self.config.temperature)
 
-        if not has_cjk(zh):
-            logger.warning(
-                f"No CJK in translation, retrying temp=0.5: en={seg.text!r} zh={zh!r}"
-            )
-            zh = self._translate(seg.text, temperature=0.5)
             if not has_cjk(zh):
                 logger.warning(
-                    f"Still no CJK after retry; emitting empty: en={seg.text!r}"
+                    f"No CJK in translation, retrying temp=0.5: en={seg.text!r} zh={zh!r}"
                 )
-                zh = ""
+                zh = self._translate(seg.text, temperature=0.5)
+                if not has_cjk(zh):
+                    logger.warning(
+                        f"Still no CJK after retry; emitting empty: en={seg.text!r}"
+                    )
+                    zh = ""
+        except TimeoutError as e:
+            logger.warning(f"Translation skipped: {e} (en={seg.text!r})")
+            return None
 
         elapsed_ms = int((time.perf_counter() - t0) * 1000)
         self.history.append((seg.text, zh))
@@ -117,6 +144,25 @@ class TranslatorWorker(threading.Thread):
         )
 
     def run(self) -> None:
+        backoff = 1.0
+        attempts = 0
+        while not self.stop_event.is_set():
+            try:
+                self._run_inner()
+                return
+            except Exception as e:
+                attempts += 1
+                logger.exception(
+                    f"TranslatorWorker failed (attempt {attempts}/3): {e}"
+                )
+                if attempts >= 3:
+                    logger.error("TranslatorWorker giving up; degraded mode")
+                    return
+                if self.stop_event.wait(backoff):
+                    return
+                backoff = min(backoff * 2, 4.0)
+
+    def _run_inner(self) -> None:
         if self._llm is None:
             self._llm = self._load_llm()
         logger.info("Translator ready")
@@ -133,11 +179,12 @@ class TranslatorWorker(threading.Thread):
             logger.info(
                 f"ZH [{zh_seg.translation_latency_ms}ms]: {zh_seg.zh_text}"
             )
-            self.out_q.put(zh_seg)
+            if self.pipeline_ref is not None:
+                e2e_ms = int((time.time() - zh_seg.audio_ts_end) * 1000)
+                self.pipeline_ref.last_e2e_ms = max(0, e2e_ms)  # type: ignore[attr-defined]
+            put_drop_oldest(self.out_q, zh_seg, "subtitle_q")
             if self.persist_q is not None:
-                try:
-                    self.persist_q.put_nowait(zh_seg)
-                except queue.Full:
-                    pass
+                put_drop_oldest(self.persist_q, zh_seg, "subtitle_q_persist")
 
+        self._executor.shutdown(wait=False)
         logger.info("Translator stopped")
