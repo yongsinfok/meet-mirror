@@ -22,6 +22,7 @@ dependencies = [
     "torch>=2.4",
     "llama-cpp-python>=0.3",
     "huggingface_hub>=0.20",
+    "PyQt6>=6.6",
 ]
 
 [project.optional-dependencies]
