@@ -105,13 +105,20 @@ class TrayApp:
 
     def _refresh_icon(self) -> None:
         if self._icon is None:
+            logger.warning("_refresh_icon called but self._icon is None")
             return
-        if self.pipeline.is_running:
-            self._icon.icon = _ICON_RUNNING
-            self._icon.title = "Meet Mirror (running)"
-        else:
-            self._icon.icon = _ICON_IDLE
-            self._icon.title = "Meet Mirror (idle)"
+        running = self.pipeline.is_running
+        try:
+            if running:
+                self._icon.icon = _ICON_RUNNING
+                self._icon.title = "Meet Mirror (running)"
+            else:
+                self._icon.icon = _ICON_IDLE
+                self._icon.title = "Meet Mirror (idle)"
+            self._icon.update_menu()
+            logger.info(f"Tray icon refreshed: running={running}")
+        except Exception as e:
+            logger.exception(f"Tray icon refresh failed: {e}")
 
     def _heartbeat_loop(self) -> None:
         """Periodically reconcile the icon with the pipeline state.
@@ -121,13 +128,21 @@ class TrayApp:
         the icon synchronously after _toggle() returns. This loop catches
         the state change as soon as the worker thread finishes loading.
         """
+        logger.info("Tray heartbeat started")
         last = None
         while not self._heartbeat_stop.is_set():
-            cur = self.pipeline.is_running
-            if cur != last:
-                self._refresh_icon()
-                last = cur
+            try:
+                cur = self.pipeline.is_running
+                if cur != last:
+                    logger.info(
+                        f"Tray heartbeat: state change {last} -> {cur}"
+                    )
+                    self._refresh_icon()
+                    last = cur
+            except Exception as e:
+                logger.exception(f"Tray heartbeat loop error: {e}")
             time.sleep(0.4)
+        logger.info("Tray heartbeat stopped")
 
     # --- menu factory ---
 
