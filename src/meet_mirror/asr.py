@@ -11,6 +11,7 @@ import numpy as np
 from loguru import logger
 
 from .config import AsrConfig
+from .queue_utils import put_drop_oldest
 from .types import AudioChunk, EnSegment
 
 
@@ -171,6 +172,25 @@ class AsrWorker(threading.Thread):
         )
 
     def run(self) -> None:
+        backoff = 1.0
+        attempts = 0
+        while not self.stop_event.is_set():
+            try:
+                self._run_inner()
+                return
+            except Exception as e:
+                attempts += 1
+                logger.exception(
+                    f"AsrWorker failed (attempt {attempts}/3): {e}"
+                )
+                if attempts >= 3:
+                    logger.error("AsrWorker giving up; degraded mode")
+                    return
+                if self.stop_event.wait(backoff):
+                    return
+                backoff = min(backoff * 2, 4.0)
+
+    def _run_inner(self) -> None:
         # Prevent faster-whisper from doing an HF HEAD/etag round-trip on
         # every start when the cache is already populated. Corp networks
         # and HF outages otherwise stall WhisperModel(...) for minutes.
@@ -190,6 +210,7 @@ class AsrWorker(threading.Thread):
             compute_type=self.asr_config.compute_type,
         )
         vad = SileroVad(threshold=self.asr_config.vad_threshold)
+        medium_loaded = False
         logger.info("ASR worker ready")
         if self.ready_event is not None:
             self.ready_event.set()
@@ -207,16 +228,39 @@ class AsrWorker(threading.Thread):
             if flush is None:
                 continue
 
-            t0 = time.perf_counter()
-            segments, _ = whisper.transcribe(
-                flush.audio,
-                language=self.asr_config.language,
-                vad_filter=False,
-                beam_size=1,
-                condition_on_previous_text=True,
-            )
-            text = " ".join(s.text.strip() for s in segments).strip()
-            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            try:
+                t0 = time.perf_counter()
+                segments, _ = whisper.transcribe(
+                    flush.audio,
+                    language=self.asr_config.language,
+                    vad_filter=False,
+                    beam_size=1,
+                    condition_on_previous_text=True,
+                )
+                text = " ".join(s.text.strip() for s in segments).strip()
+                elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            except RuntimeError as e:
+                msg = str(e).lower()
+                if "out of memory" in msg and not medium_loaded:
+                    logger.warning(
+                        f"Whisper CUDA OOM ({e}); falling back to medium model"
+                    )
+                    del whisper
+                    try:
+                        import torch
+
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
+                    whisper = WhisperModel(
+                        "medium",
+                        device=self.asr_config.device,
+                        compute_type=self.asr_config.compute_type,
+                    )
+                    medium_loaded = True
+                    continue
+                logger.exception(f"Whisper transcribe failed: {e}")
+                continue
 
             if not text:
                 logger.debug(
@@ -233,6 +277,6 @@ class AsrWorker(threading.Thread):
             logger.info(
                 f"EN [{elapsed_ms}ms/{flush.ts_end - flush.ts_start:.1f}s]: {text}"
             )
-            self.out_q.put(seg)
+            put_drop_oldest(self.out_q, seg, "asr_q")
 
         logger.info("ASR worker stopped")
