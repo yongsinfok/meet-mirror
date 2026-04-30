@@ -78,6 +78,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Whisper compute type (default float16)",
     )
     parser.add_argument(
+        "--qwen-model-path",
+        default="models/qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf",
+        help="Path to the Qwen GGUF (default: same shard Phase 1 uses)",
+    )
+    parser.add_argument(
+        "--n-ctx",
+        type=int,
+        default=8192,
+        help="Llama context window for the summarizer (default 8192)",
+    )
+    parser.add_argument(
         "--no-progress",
         action="store_true",
         help="Disable tqdm progress bars",
@@ -188,8 +199,27 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("No transcript_with_speakers.json; run without --summary-only first")
         return EXIT_BAD_SESSION
 
-    logger.info("Stage 2 (Qwen summarizer) lands in Slice 4.")
-    print("Stage 1 complete; stage 2 pending.")
+    notes_path = session_dir / "notes.md"
+    if notes_path.exists() and not args.force_summary:
+        logger.info(f"[skip stage 2] {notes_path.name} exists "
+                    f"(use --force-summary to re-run)")
+        print(f"Notes ready: {notes_path}")
+        return EXIT_OK
+
+    qwen_path = Path(args.qwen_model_path)
+    if not qwen_path.exists():
+        logger.error(f"Qwen GGUF not found: {qwen_path}")
+        logger.error("Run scripts/download_models.py --qwen-only first")
+        return EXIT_SUMMARY_FAILED
+
+    try:
+        from .summarizer import run_stage2_summarize
+        run_stage2_summarize(session_dir, qwen_path, n_ctx=args.n_ctx)
+    except Exception as e:
+        logger.exception(f"Stage 2 failed: {e}")
+        return EXIT_SUMMARY_FAILED
+
+    print(f"Notes ready: {notes_path}")
     return EXIT_OK
 
 
